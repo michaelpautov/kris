@@ -13,7 +13,7 @@ describe('ClientService', () => {
     // Create test users
     verifiedUser = await prisma.user.create({
       data: {
-        telegramId: BigInt(111111111),
+        telegramId: "111111111",
         telegramUsername: 'verified_test',
         firstName: 'Verified',
         lastName: 'User',
@@ -24,7 +24,7 @@ describe('ClientService', () => {
 
     testUser = await prisma.user.create({
       data: {
-        telegramId: BigInt(222222222),
+        telegramId: "222222222",
         telegramUsername: 'test_user',
         firstName: 'Test',
         lastName: 'User',
@@ -39,7 +39,7 @@ describe('ClientService', () => {
     await prisma.user.deleteMany({
       where: {
         telegramId: {
-          in: [BigInt(111111111), BigInt(222222222)]
+          in: ["111111111", "222222222"]
         }
       }
     })

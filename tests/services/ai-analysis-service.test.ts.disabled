@@ -1,0 +1,373 @@
+import { AiAnalysisService } from "../../src/services/ai-analysis-service";
+import { prisma } from "../setup";
+import type {
+  AnalysisRequest,
+  AnalysisType,
+  SafetyAssessmentResult,
+  FaceDetectionResult,
+} from "../../src/types/ai-analysis";
+
+describe("AI Analysis Service Tests (Simple)", () => {
+  let testUserId: string;
+  let testClientProfileId: string;
+  let testPhotoId: string;
+
+  beforeEach(async () => {
+    // Create test user
+    const testUser = await prisma.user.create({
+      data: {
+        telegramId: "123456789",
+        telegramUsername: "testuser",
+        firstName: "Test",
+        lastName: "User",
+        role: "admin",
+        phoneNumber: "+1234567890",
+        isActive: true,
+      },
+    });
+    testUserId = testUser.id;
+
+    // Create test client profile
+    const testClient = await prisma.clientProfile.create({
+      data: {
+        name: "Test Client",
+        phone: "+1987654321",
+        description: "Test client for AI analysis",
+        status: "active",
+      },
+    });
+    testClientProfileId = testClient.id;
+
+    // Create test photo
+    const testPhoto = await prisma.photo.create({
+      data: {
+        clientId: testClientProfileId,
+        userId: testUserId,
+        fileId: "test-file-123",
+        fileName: "test.jpg",
+        mimeType: "image/jpeg",
+        fileSize: 1024000,
+        status: "active",
+      },
+    });
+    testPhotoId = testPhoto.id;
+  });
+
+  describe("createAnalysis", () => {
+    test("should create safety assessment analysis successfully", async () => {
+      const request: AnalysisRequest = {
+        clientProfileId: testClientProfileId,
+        analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+        resultData: {
+          overallScore: 7.5,
+          riskFactors: [
+            {
+              factor: "multiple_phones",
+              severity: "medium" as const,
+              description: "Multiple phone numbers detected",
+            },
+            {
+              factor: "inconsistent_stories",
+              severity: "low" as const,
+              description: "Story inconsistencies found",
+            },
+          ],
+          recommendations: ["additional_verification", "background_check"],
+          confidence: 0.85,
+        } as SafetyAssessmentResult,
+        confidenceScore: 0.85,
+        modelVersion: "safety-v1.2",
+      };
+
+      const result = await aiAnalysisService.createAnalysis(request);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.id).toBeDefined();
+        expect(result.data.clientProfileId).toBe(testClientProfileId);
+        expect(result.data.analysisType).toBe("SAFETY_ASSESSMENT");
+        expect(result.data.confidenceScore).toBe(0.85);
+        expect(result.data.modelVersion).toBe("safety-v1.2");
+        expect(result.data.resultData).toEqual(request.resultData);
+      }
+    });
+
+    test("should create face detection analysis for photo", async () => {
+      const request: AnalysisRequest = {
+        photoId: testPhotoId,
+        analysisType: "FACE_DETECTION" as AnalysisType,
+        resultData: {
+          faces: [
+            {
+              boundingBox: { x: 100, y: 150, width: 200, height: 250 },
+              confidence: 0.95,
+              landmarks: [],
+            },
+          ],
+          totalFaces: 1,
+        } as FaceDetectionResult,
+        confidenceScore: 0.95,
+        processingTimeMs: 250,
+      };
+
+      const result = await aiAnalysisService.createAnalysis(request);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.photoId).toBe(testPhotoId);
+        expect(result.data.analysisType).toBe("FACE_DETECTION");
+        expect(result.data.processingTimeMs).toBe(250);
+      }
+    });
+
+    test("should handle validation errors for invalid data", async () => {
+      const invalidRequest = {
+        // Missing required analysisType
+        clientProfileId: testClientProfileId,
+        resultData: {},
+        confidenceScore: 1.5, // Invalid confidence score > 1
+      } as AnalysisRequest;
+
+      const result = await aiAnalysisService.createAnalysis(invalidRequest);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain("Validation");
+      }
+    });
+
+    test("should handle database constraint violations", async () => {
+      const request: AnalysisRequest = {
+        clientProfileId: ""999999"", // Non-existent client
+        analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+        resultData: { score: 5.0 },
+        confidenceScore: 0.8,
+      };
+
+      const result = await aiAnalysisService.createAnalysis(request);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain("constraint");
+      }
+    });
+  });
+
+  describe("getAnalysisById", () => {
+    test("should retrieve analysis by ID successfully", async () => {
+      // Create analysis first
+      const createRequest: AnalysisRequest = {
+        clientProfileId: testClientProfileId,
+        analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+        resultData: { score: 8.0 },
+        confidenceScore: 0.9,
+      };
+
+      const createResult =
+        await aiAnalysisService.createAnalysis(createRequest);
+      expect(createResult.success).toBe(true);
+
+      if (createResult.success) {
+        const analysisId = createResult.data.id;
+
+        const getResult = await aiAnalysisService.getAnalysisById(analysisId);
+
+        expect(getResult.success).toBe(true);
+        if (getResult.success) {
+          expect(getResult.data.id).toBe(analysisId);
+          expect(getResult.data.analysisType).toBe("SAFETY_ASSESSMENT");
+          expect(getResult.data.confidenceScore).toBe(0.9);
+        }
+      }
+    });
+
+    test("should handle non-existent analysis ID", async () => {
+      const result = await aiAnalysisService.getAnalysisById(""999999"");
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toContain("not found");
+      }
+    });
+  });
+
+  describe("getAnalysesByClient", () => {
+    test("should retrieve all analyses for a client", async () => {
+      // Create multiple analyses for the client
+      const requests: AnalysisRequest[] = [
+        {
+          clientProfileId: testClientProfileId,
+          analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+          resultData: { score: 7.0 },
+          confidenceScore: 0.8,
+        },
+        {
+          clientProfileId: testClientProfileId,
+          analysisType: "TEXT_SENTIMENT" as AnalysisType,
+          resultData: { sentiment: "neutral" },
+          confidenceScore: 0.75,
+        },
+      ];
+
+      for (const request of requests) {
+        const result = await aiAnalysisService.createAnalysis(request);
+        expect(result.success).toBe(true);
+      }
+
+      const getResult =
+        await aiAnalysisService.getAnalysesByClient(testClientProfileId);
+
+      expect(getResult.success).toBe(true);
+      if (getResult.success) {
+        expect(getResult.data).toHaveLength(2);
+        expect(getResult.data[0].clientProfileId).toBe(testClientProfileId);
+        expect(getResult.data[1].clientProfileId).toBe(testClientProfileId);
+      }
+    });
+
+    test("should return empty array for client with no analyses", async () => {
+      // Create another client without analyses
+      const anotherClient = await prisma.clientProfile.create({
+        data: {
+          phoneNumber: "+1555555555",
+          normalizedPhone: "+1555555555",
+          firstName: "Another",
+          lastName: "Client",
+          createdBy: testUserId,
+          status: "PENDING_VERIFICATION",
+          riskLevel: "UNKNOWN",
+        },
+      });
+
+      const result = await aiAnalysisService.getAnalysesByClient(
+        anotherClient.id,
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).toHaveLength(0);
+      }
+    });
+  });
+
+  describe("getAnalysesByPhoto", () => {
+    test("should retrieve all analyses for a photo", async () => {
+      const request: AnalysisRequest = {
+        photoId: testPhotoId,
+        analysisType: "FACE_DETECTION" as AnalysisType,
+        resultData: { facesDetected: 1 },
+        confidenceScore: 0.92,
+      };
+
+      const createResult = await aiAnalysisService.createAnalysis(request);
+      expect(createResult.success).toBe(true);
+
+      const getResult = await aiAnalysisService.getAnalysesByPhoto(testPhotoId);
+
+      expect(getResult.success).toBe(true);
+      if (getResult.success) {
+        expect(getResult.data).toHaveLength(1);
+        expect(getResult.data[0].photoId).toBe(testPhotoId);
+        expect(getResult.data[0].analysisType).toBe("FACE_DETECTION");
+      }
+    });
+  });
+
+  describe("updateAnalysisConfidence", () => {
+    test("should update confidence score successfully", async () => {
+      // Create analysis first
+      const createRequest: AnalysisRequest = {
+        clientProfileId: testClientProfileId,
+        analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+        resultData: { score: 6.0 },
+        confidenceScore: 0.7,
+      };
+
+      const createResult =
+        await aiAnalysisService.createAnalysis(createRequest);
+      expect(createResult.success).toBe(true);
+
+      if (createResult.success) {
+        const analysisId = createResult.data.id;
+        const newConfidence = 0.95;
+
+        const updateResult = await aiAnalysisService.updateAnalysisConfidence(
+          analysisId,
+          newConfidence,
+        );
+
+        expect(updateResult.success).toBe(true);
+        if (updateResult.success) {
+          expect(updateResult.data.confidenceScore).toBe(newConfidence);
+        }
+      }
+    });
+
+    test("should validate confidence score range", async () => {
+      const createRequest: AnalysisRequest = {
+        clientProfileId: testClientProfileId,
+        analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+        resultData: { score: 6.0 },
+        confidenceScore: 0.7,
+      };
+
+      const createResult =
+        await aiAnalysisService.createAnalysis(createRequest);
+      expect(createResult.success).toBe(true);
+
+      if (createResult.success) {
+        const analysisId = createResult.data.id;
+
+        // Test invalid confidence score
+        const updateResult = await aiAnalysisService.updateAnalysisConfidence(
+          analysisId,
+          1.5, // Invalid: > 1.0
+        );
+
+        expect(updateResult.success).toBe(false);
+        if (!updateResult.success) {
+          expect(updateResult.error.message).toContain("confidence");
+        }
+      }
+    });
+  });
+
+  describe("getAnalysesByType", () => {
+    test("should filter analyses by type", async () => {
+      // Create analyses of different types
+      const requests: AnalysisRequest[] = [
+        {
+          clientProfileId: testClientProfileId,
+          analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+          resultData: { score: 7.0 },
+        },
+        {
+          photoId: testPhotoId,
+          analysisType: "FACE_DETECTION" as AnalysisType,
+          resultData: { facesDetected: 1 },
+        },
+        {
+          clientProfileId: testClientProfileId,
+          analysisType: "SAFETY_ASSESSMENT" as AnalysisType,
+          resultData: { score: 8.0 },
+        },
+      ];
+
+      for (const request of requests) {
+        const result = await aiAnalysisService.createAnalysis(request);
+        expect(result.success).toBe(true);
+      }
+
+      const result =
+        await aiAnalysisService.getAnalysesByType("SAFETY_ASSESSMENT");
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).toHaveLength(2);
+        result.data.forEach((analysis) => {
+          expect(analysis.analysisType).toBe("SAFETY_ASSESSMENT");
+        });
+      }
+    });
+  });
+});

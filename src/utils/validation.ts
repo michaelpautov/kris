@@ -167,3 +167,29 @@ export function isValidImageFile(mimeType: string, fileSize: number): boolean {
 
   return allowedTypes.includes(mimeType.toLowerCase()) && fileSize <= maxSize;
 }
+
+// AI Analysis validation schemas
+export const CreateAnalysisSchema = z.object({
+  clientProfileId: z.bigint().positive().optional(),
+  photoId: z.bigint().positive().optional(),
+  analysisType: z.enum([
+    "FACE_DETECTION",
+    "FACE_RECOGNITION",
+    "IMAGE_MODERATION",
+    "TEXT_SENTIMENT",
+    "SAFETY_ASSESSMENT",
+  ]),
+  resultData: z.record(z.any()),
+  confidenceScore: z.number().min(0).max(1).optional(),
+  modelVersion: z.string().max(50).optional(),
+  processingTimeMs: z.number().positive().optional(),
+});
+
+/**
+ * Validates AI confidence score range
+ * @param score - Confidence score to validate
+ * @returns True if valid, false otherwise
+ */
+export function isValidConfidenceScore(score: number): boolean {
+  return score >= 0 && score <= 1;
+}

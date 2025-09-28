@@ -1,0 +1,294 @@
+import { RateLimitService } from '../../src/services/rate-limit-service'
+import { prisma } from '../setup'
+import type { RateLimitRequest } from '../../src/types/rate-limit'
+
+describe('Rate Limit Service Tests', () => {
+  let rateLimitService: RateLimitService
+  let testUserId: bigint
+  let testTelegramId: bigint
+
+  beforeEach(async () => {
+    rateLimitService = new RateLimitService()
+    testUserId = BigInt('123456')
+    testTelegramId = BigInt('987654321')
+  })
+
+  describe('checkRateLimit', () => {
+    test('should allow first request within limits', async () => {
+      const request: RateLimitRequest = {
+        userId: testUserId,
+        actionType: 'test_action',
+        maxAttempts: 5,
+        windowMinutes: 60
+      }
+
+      const result = await rateLimitService.checkRateLimit(request)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.allowed).toBe(true)
+        expect(result.data.remaining).toBe(4)
+        expect(result.data.totalAttempts).toBe(1)
+      }
+    })
+
+    test('should block requests exceeding rate limit', async () => {
+      const request: RateLimitRequest = {
+        userId: testUserId,
+        actionType: 'test_action_limit',
+        maxAttempts: 2,
+        windowMinutes: 60
+      }
+
+      // Make 3 requests - the third should be blocked
+      const results = await Promise.all([
+        rateLimitService.checkRateLimit(request),
+        rateLimitService.checkRateLimit(request),
+        rateLimitService.checkRateLimit(request)
+      ])
+
+      expect(results[0].success).toBe(true)
+      expect(results[1].success).toBe(true)
+      expect(results[2].success).toBe(true)
+
+      if (results[0].success && results[1].success && results[2].success) {
+        expect(results[0].data.allowed).toBe(true)
+        expect(results[1].data.allowed).toBe(true)
+        expect(results[2].data.allowed).toBe(false)
+        expect(results[2].data.remaining).toBe(0)
+      }
+    })
+
+    test('should work with telegram ID', async () => {
+      const request: RateLimitRequest = {
+        telegramId: testTelegramId,
+        actionType: 'telegram_action',
+        maxAttempts: 3,
+        windowMinutes: 30
+      }
+
+      const result = await rateLimitService.checkRateLimit(request)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.allowed).toBe(true)
+        expect(result.data.remaining).toBe(2)
+      }
+    })
+
+    test('should use default rate limits for known actions', async () => {
+      const request: RateLimitRequest = {
+        userId: testUserId,
+        actionType: 'create_review'
+        // Should use default: 5 attempts per 60 minutes
+      }
+
+      const result = await rateLimitService.checkRateLimit(request)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.allowed).toBe(true)
+        expect(result.data.remaining).toBe(4) // 5 - 1 = 4
+      }
+    })
+
+    test('should handle missing identifier', async () => {
+      const request: RateLimitRequest = {
+        actionType: 'test_action'
+        // No userId or telegramId
+      }
+
+      const result = await rateLimitService.checkRateLimit(request)
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.message).toContain('Either userId or telegramId must be provided')
+      }
+    })
+  })
+
+  describe('getRateLimitStatus', () => {
+    test('should return status for existing rate limit', async () => {
+      const identifier = { userId: testUserId }
+      const actionType = 'status_test'
+
+      // Create some rate limit entries first
+      await rateLimitService.checkRateLimit({
+        userId: testUserId,
+        actionType,
+        maxAttempts: 5,
+        windowMinutes: 60
+      })
+
+      const result = await rateLimitService.getRateLimitStatus(identifier, actionType)
+
+      expect(result.success).toBe(true)
+      if (result.success && result.data) {
+        expect(result.data.totalAttempts).toBe(1)
+        expect(result.data.remaining).toBe(4)
+        expect(result.data.allowed).toBe(true)
+      }
+    })
+
+    test('should return default status for non-existing rate limit', async () => {
+      const identifier = { userId: BigInt('999999') }
+      const actionType = 'non_existing_action'
+
+      const result = await rateLimitService.getRateLimitStatus(identifier, actionType)
+
+      expect(result.success).toBe(true)
+      if (result.success && result.data) {
+        expect(result.data.totalAttempts).toBe(0)
+        expect(result.data.allowed).toBe(true)
+      }
+    })
+  })
+
+  describe('resetRateLimit', () => {
+    test('should reset rate limit for user', async () => {
+      const identifier = { userId: testUserId }
+      const actionType = 'reset_test'
+
+      // Create rate limit first
+      await rateLimitService.checkRateLimit({
+        userId: testUserId,
+        actionType,
+        maxAttempts: 1,
+        windowMinutes: 60
+      })
+
+      // Should be blocked on second attempt
+      const blockedResult = await rateLimitService.checkRateLimit({
+        userId: testUserId,
+        actionType,
+        maxAttempts: 1,
+        windowMinutes: 60
+      })
+
+      expect(blockedResult.success).toBe(true)
+      if (blockedResult.success) {
+        expect(blockedResult.data.allowed).toBe(false)
+      }
+
+      // Reset the rate limit
+      const resetResult = await rateLimitService.resetRateLimit(identifier, actionType)
+      expect(resetResult.success).toBe(true)
+
+      // Should be allowed again
+      const allowedResult = await rateLimitService.checkRateLimit({
+        userId: testUserId,
+        actionType,
+        maxAttempts: 1,
+        windowMinutes: 60
+      })
+
+      expect(allowedResult.success).toBe(true)
+      if (allowedResult.success) {
+        expect(allowedResult.data.allowed).toBe(true)
+      }
+    })
+  })
+
+  describe('cleanupExpiredLimits', () => {
+    test('should clean up expired rate limits', async () => {
+      // Create a rate limit that expires immediately
+      await prisma.rateLimit.create({
+        data: {
+          userId: testUserId,
+          actionType: 'expired_test',
+          count: 1,
+          windowStart: new Date(Date.now() - 1000),
+          expiresAt: new Date(Date.now() - 1000) // Already expired
+        }
+      })
+
+      const result = await rateLimitService.cleanupExpiredLimits()
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data).toBeGreaterThanOrEqual(1)
+      }
+    })
+  })
+
+  describe('getStatistics', () => {
+    test('should return rate limiting statistics', async () => {
+      // Create some test data
+      await rateLimitService.checkRateLimit({
+        userId: testUserId,
+        actionType: 'stats_test',
+        maxAttempts: 3,
+        windowMinutes: 60
+      })
+
+      const result = await rateLimitService.getStatistics()
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.totalChecks).toBeGreaterThanOrEqual(0)
+        expect(result.data.blockedPercentage).toBeGreaterThanOrEqual(0)
+        expect(Array.isArray(result.data.topActions)).toBe(true)
+        expect(Array.isArray(result.data.recentActivity)).toBe(true)
+      }
+    })
+  })
+
+  describe('checkMultipleActions', () => {
+    test('should check multiple actions successfully', async () => {
+      const requests: RateLimitRequest[] = [
+        {
+          userId: testUserId,
+          actionType: 'multi_test_1',
+          maxAttempts: 5,
+          windowMinutes: 60
+        },
+        {
+          userId: testUserId,
+          actionType: 'multi_test_2',
+          maxAttempts: 3,
+          windowMinutes: 30
+        }
+      ]
+
+      const result = await rateLimitService.checkMultipleActions(requests)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data).toHaveLength(2)
+        expect(result.data[0].allowed).toBe(true)
+        expect(result.data[1].allowed).toBe(true)
+      }
+    })
+
+    test('should fail fast when one action is blocked', async () => {
+      // First exhaust the limit for one action
+      const exhaustRequest = {
+        userId: testUserId,
+        actionType: 'multi_fail_test',
+        maxAttempts: 1,
+        windowMinutes: 60
+      }
+
+      await rateLimitService.checkRateLimit(exhaustRequest)
+
+      const requests: RateLimitRequest[] = [
+        {
+          userId: testUserId,
+          actionType: 'multi_success_test',
+          maxAttempts: 5,
+          windowMinutes: 60
+        },
+        exhaustRequest // This should be blocked
+      ]
+
+      const result = await rateLimitService.checkMultipleActions(requests)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data).toHaveLength(2)
+        expect(result.data[0].allowed).toBe(true)
+        expect(result.data[1].allowed).toBe(false)
+      }
+    })
+  })
+})
