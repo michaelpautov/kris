@@ -1,0 +1,330 @@
+// Prisma schema for ClientCheck
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  ADMIN         @map("admin")
+  MANAGER       @map("manager")
+  VERIFIED_USER @map("verified_user")
+  REGULAR_USER  @map("regular_user")
+
+  @@map("user_role")
+}
+
+enum ClientStatus {
+  PENDING_VERIFICATION @map("pending_verification")
+  VERIFIED_SAFE       @map("verified_safe")
+  FLAGGED_CONCERNING  @map("flagged_concerning")
+  BLACKLISTED         @map("blacklisted")
+  UNDER_REVIEW        @map("under_review")
+
+  @@map("client_status")
+}
+
+enum RiskLevel {
+  UNKNOWN  @map("unknown")
+  LOW      @map("low")
+  MEDIUM   @map("medium")
+  HIGH     @map("high")
+  CRITICAL @map("critical")
+
+  @@map("risk_level")
+}
+
+enum VerificationMethod {
+  PHOTO_VERIFICATION    @map("photo_verification")
+  VIDEO_CALL           @map("video_call")
+  IN_PERSON_MEETING    @map("in_person_meeting")
+  DOCUMENT_VERIFICATION @map("document_verification")
+  PHONE_VERIFICATION   @map("phone_verification")
+
+  @@map("verification_method")
+}
+
+enum ReviewStatus {
+  ACTIVE  @map("active")
+  FLAGGED @map("flagged")
+  HIDDEN  @map("hidden")
+  DELETED @map("deleted")
+
+  @@map("review_status")
+}
+
+enum StorageType {
+  TELEGRAM     @map("telegram")
+  MINIO        @map("minio")
+  EXTERNAL_URL @map("external_url")
+
+  @@map("storage_type")
+}
+
+enum PhotoStatus {
+  PENDING_REVIEW @map("pending_review")
+  APPROVED       @map("approved")
+  REJECTED       @map("rejected")
+  FLAGGED        @map("flagged")
+
+  @@map("photo_status")
+}
+
+enum AnalysisType {
+  FACE_DETECTION    @map("face_detection")
+  FACE_RECOGNITION  @map("face_recognition")
+  IMAGE_MODERATION  @map("image_moderation")
+  TEXT_SENTIMENT    @map("text_sentiment")
+  SAFETY_ASSESSMENT @map("safety_assessment")
+
+  @@map("analysis_type")
+}
+
+enum AdminActionType {
+  USER_ROLE_CHANGE    @map("user_role_change")
+  USER_BAN           @map("user_ban")
+  USER_UNBAN         @map("user_unban")
+  CLIENT_STATUS_CHANGE @map("client_status_change")
+  REVIEW_MODERATE    @map("review_moderate")
+  PHOTO_MODERATE     @map("photo_moderate")
+  SYSTEM_CONFIG_CHANGE @map("system_config_change")
+  DATA_EXPORT        @map("data_export")
+  BULK_OPERATION     @map("bulk_operation")
+
+  @@map("admin_action_type")
+}
+
+enum TargetType {
+  USER           @map("user")
+  CLIENT_PROFILE @map("client_profile")
+  REVIEW         @map("review")
+  PHOTO          @map("photo")
+  SYSTEM         @map("system")
+
+  @@map("target_type")
+}
+
+enum NotificationType {
+  REVIEW_RECEIVED        @map("review_received")
+  PHOTO_UPLOADED        @map("photo_uploaded")
+  STATUS_CHANGED        @map("status_changed")
+  SYSTEM_ALERT          @map("system_alert")
+  VERIFICATION_REQUIRED @map("verification_required")
+
+  @@map("notification_type")
+}
+
+// Core Models
+model User {
+  id               BigInt   @id @default(autoincrement())
+  telegramId       BigInt   @unique @map("telegram_id")
+  telegramUsername String?  @map("telegram_username") @db.VarChar(32)
+  firstName        String?  @map("first_name") @db.VarChar(64)
+  lastName         String?  @map("last_name") @db.VarChar(64)
+  phoneNumber      String?  @map("phone_number") @db.VarChar(20)
+  role             UserRole @default(REGULAR_USER)
+  isVerified       Boolean  @default(false) @map("is_verified")
+  isActive         Boolean  @default(true) @map("is_active")
+  languageCode     String   @default("en") @map("language_code") @db.VarChar(10)
+  timezone         String?  @db.VarChar(50)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+  lastActivityAt   DateTime @default(now()) @map("last_activity_at")
+
+  // Relations
+  createdProfiles ClientProfile[]
+  reviews         Review[]
+  uploadedPhotos  Photo[]
+  adminActions    AdminAction[]
+  sessions        UserSession[]
+  notifications   Notification[]
+  rateLimits      RateLimit[]
+
+  @@map("users")
+}
+
+model ClientProfile {
+  id               BigInt       @id @default(autoincrement())
+  phoneNumber      String       @unique @map("phone_number") @db.VarChar(20)
+  normalizedPhone  String       @unique @map("normalized_phone") @db.VarChar(20)
+  firstName        String?      @map("first_name") @db.VarChar(64)
+  lastName         String?      @map("last_name") @db.VarChar(64)
+  telegramUsername String?      @map("telegram_username") @db.VarChar(32)
+  telegramId       BigInt?      @map("telegram_id")
+  profilePhotoUrl  String?      @map("profile_photo_url")
+  status           ClientStatus @default(PENDING_VERIFICATION)
+  riskLevel        RiskLevel    @default(UNKNOWN) @map("risk_level")
+  aiSafetyScore    Decimal?     @map("ai_safety_score") @db.Decimal(3, 2)
+  totalReviews     Int          @default(0) @map("total_reviews")
+  averageRating    Decimal?     @map("average_rating") @db.Decimal(3, 2)
+  verifiedAt       DateTime?    @map("verified_at")
+  createdBy        BigInt       @map("created_by")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  creator     User         @relation(fields: [createdBy], references: [id])
+  reviews     Review[]
+  photos      Photo[]
+  aiAnalyses  AiAnalysis[]
+
+  @@map("client_profiles")
+}
+
+model Review {
+  id                 BigInt             @id @default(autoincrement())
+  clientProfileId    BigInt             @map("client_profile_id")
+  reviewerId         BigInt             @map("reviewer_id")
+  rating             Int
+  reviewText         String?            @map("review_text")
+  encounterDate      DateTime?          @map("encounter_date") @db.Date
+  locationCity       String?            @map("location_city") @db.VarChar(100)
+  locationCountry    String?            @map("location_country") @db.VarChar(100)
+  tags               String[]
+  isAnonymous        Boolean            @default(false) @map("is_anonymous")
+  isVerified         Boolean            @default(false) @map("is_verified")
+  verificationMethod VerificationMethod? @map("verification_method")
+  status             ReviewStatus       @default(ACTIVE)
+  flaggedCount       Int                @default(0) @map("flagged_count")
+  helpfulVotes       Int                @default(0) @map("helpful_votes")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  clientProfile ClientProfile @relation(fields: [clientProfileId], references: [id], onDelete: Cascade)
+  reviewer      User          @relation(fields: [reviewerId], references: [id])
+
+  @@map("reviews")
+}
+
+model Photo {
+  id                   BigInt      @id @default(autoincrement())
+  clientProfileId      BigInt?     @map("client_profile_id")
+  uploaderId           BigInt      @map("uploader_id")
+  fileId               String      @map("file_id") @db.VarChar(255)
+  storageType          StorageType @map("storage_type")
+  originalFilename     String?     @map("original_filename") @db.VarChar(255)
+  fileSize             Int?        @map("file_size")
+  mimeType             String?     @map("mime_type") @db.VarChar(100)
+  width                Int?
+  height               Int?
+  thumbnailUrl         String?     @map("thumbnail_url")
+  isProfilePhoto       Boolean     @default(false) @map("is_profile_photo")
+  aiAnalysisCompleted  Boolean     @default(false) @map("ai_analysis_completed")
+  faceDetectionResult  Json?       @map("face_detection_result")
+  moderationResult     Json?       @map("moderation_result")
+  status               PhotoStatus @default(PENDING_REVIEW)
+  createdAt            DateTime    @default(now()) @map("created_at")
+  updatedAt            DateTime    @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  clientProfile ClientProfile? @relation(fields: [clientProfileId], references: [id], onDelete: Cascade)
+  uploader      User           @relation(fields: [uploaderId], references: [id])
+  aiAnalyses    AiAnalysis[]
+
+  @@map("photos")
+}
+
+model AiAnalysis {
+  id               BigInt       @id @default(autoincrement())
+  clientProfileId  BigInt?      @map("client_profile_id")
+  photoId          BigInt?      @map("photo_id")
+  analysisType     AnalysisType @map("analysis_type")
+  confidenceScore  Decimal?     @map("confidence_score") @db.Decimal(5, 4)
+  resultData       Json         @map("result_data")
+  modelVersion     String?      @map("model_version") @db.VarChar(50)
+  processingTimeMs Int?         @map("processing_time_ms")
+  createdAt        DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  clientProfile ClientProfile? @relation(fields: [clientProfileId], references: [id], onDelete: Cascade)
+  photo         Photo?         @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@map("ai_analysis")
+}
+
+model UserSession {
+  id                  BigInt   @id @default(autoincrement())
+  userId              BigInt   @map("user_id")
+  sessionToken        String   @unique @map("session_token") @db.VarChar(255)
+  telegramSessionData Json?    @map("telegram_session_data")
+  ipAddress           String?  @map("ip_address") @db.Inet
+  userAgent           String?  @map("user_agent")
+  isActive            Boolean  @default(true) @map("is_active")
+  expiresAt           DateTime @map("expires_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  lastUsedAt          DateTime @default(now()) @map("last_used_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+model AdminAction {
+  id         BigInt          @id @default(autoincrement())
+  adminId    BigInt          @map("admin_id")
+  actionType AdminActionType @map("action_type")
+  targetType TargetType?     @map("target_type")
+  targetId   BigInt?         @map("target_id")
+  details    Json?
+  ipAddress  String?         @map("ip_address") @db.Inet
+  userAgent  String?         @map("user_agent")
+  createdAt  DateTime        @default(now()) @map("created_at")
+
+  // Relations
+  admin User @relation(fields: [adminId], references: [id])
+
+  @@map("admin_actions")
+}
+
+model BotConfiguration {
+  id          BigInt   @id @default(autoincrement())
+  key         String   @unique @db.VarChar(100)
+  value       Json
+  description String?
+  isSensitive Boolean  @default(false) @map("is_sensitive")
+  updatedBy   BigInt?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("bot_configurations")
+}
+
+model Notification {
+  id       BigInt           @id @default(autoincrement())
+  userId   BigInt           @map("user_id")
+  type     NotificationType
+  title    String           @db.VarChar(255)
+  message  String
+  data     Json?
+  isRead   Boolean          @default(false) @map("is_read")
+  sentAt   DateTime?        @map("sent_at")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model RateLimit {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt?  @map("user_id")
+  telegramId  BigInt?  @map("telegram_id")
+  actionType  String   @map("action_type") @db.VarChar(50)
+  count       Int      @default(1)
+  windowStart DateTime @default(now()) @map("window_start")
+  expiresAt   DateTime @map("expires_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("rate_limits")
+}
