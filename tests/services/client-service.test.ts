@@ -1,0 +1,269 @@
+import { ClientService } from '../../src/services/client-service'
+import { prisma } from '../setup'
+import { CreateClientRequest, UpdateClientRequest } from '../../src/types/client'
+
+describe('ClientService', () => {
+  let clientService: ClientService
+  let testUser: any
+  let verifiedUser: any
+
+  beforeAll(async () => {
+    clientService = new ClientService(prisma)
+
+    // Create test users
+    verifiedUser = await prisma.user.create({
+      data: {
+        telegramId: BigInt(111111111),
+        telegramUsername: 'verified_test',
+        firstName: 'Verified',
+        lastName: 'User',
+        role: 'VERIFIED_USER',
+        isVerified: true
+      }
+    })
+
+    testUser = await prisma.user.create({
+      data: {
+        telegramId: BigInt(222222222),
+        telegramUsername: 'test_user',
+        firstName: 'Test',
+        lastName: 'User',
+        role: 'REGULAR_USER',
+        isVerified: false
+      }
+    })
+  })
+
+  afterAll(async () => {
+    // Clean up test users
+    await prisma.user.deleteMany({
+      where: {
+        telegramId: {
+          in: [BigInt(111111111), BigInt(222222222)]
+        }
+      }
+    })
+  })
+
+  describe('createClient - Happy Path', () => {
+    test('should create client with valid data', async () => {
+      const clientData: CreateClientRequest = {
+        phoneNumber: '+1234567890',
+        firstName: 'John',
+        lastName: 'Doe',
+        telegramUsername: 'johndoe'
+      }
+
+      const result = await clientService.createClient(clientData, verifiedUser.id)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.phoneNumber).toBe(clientData.phoneNumber)
+        expect(result.data.normalizedPhone).toBe('+1234567890')
+        expect(result.data.firstName).toBe(clientData.firstName)
+        expect(result.data.status).toBe('PENDING_VERIFICATION')
+        expect(result.data.riskLevel).toBe('UNKNOWN')
+        expect(result.data.createdBy).toBe(verifiedUser.id)
+      }
+
+      // Clean up
+      if (result.success) {
+        await prisma.clientProfile.delete({ where: { id: result.data.id } })
+      }
+    })
+
+    test('should create client with minimal data', async () => {
+      const clientData: CreateClientRequest = {
+        phoneNumber: '+9876543210'
+      }
+
+      const result = await clientService.createClient(clientData, verifiedUser.id)
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.phoneNumber).toBe(clientData.phoneNumber)
+        expect(result.data.firstName).toBeNull()
+        expect(result.data.lastName).toBeNull()
+      }
+
+      // Clean up
+      if (result.success) {
+        await prisma.clientProfile.delete({ where: { id: result.data.id } })
+      }
+    })
+  })
+
+  describe('createClient - Error Cases', () => {
+    test('should reject invalid phone number', async () => {
+      const clientData: CreateClientRequest = {
+        phoneNumber: 'invalid-phone'
+      }
+
+      const result = await clientService.createClient(clientData, verifiedUser.id)
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.message).toContain('Invalid phone number format')
+      }
+    })
+
+    test('should reject duplicate phone number', async () => {
+      const phoneNumber = '+5555555555'
+
+      // Create first client
+      const clientData: CreateClientRequest = {
+        phoneNumber
+      }
+
+      const result1 = await clientService.createClient(clientData, verifiedUser.id)
+      expect(result1.success).toBe(true)
+
+      // Try to create second client with same phone
+      const result2 = await clientService.createClient(clientData, verifiedUser.id)
+      expect(result2.success).toBe(false)
+      if (!result2.success) {
+        expect(result2.error.message).toContain('already exists')
+      }
+
+      // Clean up
+      if (result1.success) {
+        await prisma.clientProfile.delete({ where: { id: result1.data.id } })
+      }
+    })
+  })
+
+  describe('findByPhone', () => {
+    test('should find client by phone number', async () => {
+      const phoneNumber = '+1111111111'
+
+      // Create client
+      const createResult = await clientService.createClient(
+        { phoneNumber },
+        verifiedUser.id
+      )
+      expect(createResult.success).toBe(true)
+
+      // Find by phone
+      const findResult = await clientService.findByPhone(phoneNumber)
+      expect(findResult.success).toBe(true)
+      if (findResult.success && findResult.data) {
+        expect(findResult.data.phoneNumber).toBe(phoneNumber)
+      }
+
+      // Clean up
+      if (createResult.success) {
+        await prisma.clientProfile.delete({ where: { id: createResult.data.id } })
+      }
+    })
+
+    test('should return null for non-existent phone', async () => {
+      const result = await clientService.findByPhone('+9999999999')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data).toBeNull()
+      }
+    })
+  })
+
+  describe('updateClient', () => {
+    test('should update client status', async () => {
+      // Create client
+      const createResult = await clientService.createClient(
+        { phoneNumber: '+2222222222' },
+        verifiedUser.id
+      )
+      expect(createResult.success).toBe(true)
+
+      if (createResult.success) {
+        // Update status
+        const updateData: UpdateClientRequest = {
+          status: 'VERIFIED_SAFE',
+          riskLevel: 'LOW'
+        }
+
+        const updateResult = await clientService.updateClient(
+          createResult.data.id,
+          updateData,
+          verifiedUser.id
+        )
+
+        expect(updateResult.success).toBe(true)
+        if (updateResult.success) {
+          expect(updateResult.data.status).toBe('VERIFIED_SAFE')
+          expect(updateResult.data.riskLevel).toBe('LOW')
+          expect(updateResult.data.verifiedAt).toBeDefined()
+        }
+
+        // Clean up
+        await prisma.clientProfile.delete({ where: { id: createResult.data.id } })
+      }
+    })
+  })
+
+  describe('searchClients', () => {
+    test('should search clients with filters', async () => {
+      // Create test clients
+      const client1 = await clientService.createClient(
+        { phoneNumber: '+3333333333', firstName: 'Test1' },
+        verifiedUser.id
+      )
+      const client2 = await clientService.createClient(
+        { phoneNumber: '+4444444444', firstName: 'Test2' },
+        verifiedUser.id
+      )
+
+      expect(client1.success && client2.success).toBe(true)
+
+      // Search by creator
+      const searchResult = await clientService.searchClients(
+        { createdBy: verifiedUser.id },
+        1,
+        10
+      )
+
+      expect(searchResult.success).toBe(true)
+      if (searchResult.success) {
+        expect(searchResult.data.clients.length).toBeGreaterThanOrEqual(2)
+        expect(searchResult.data.total).toBeGreaterThanOrEqual(2)
+      }
+
+      // Clean up
+      if (client1.success) {
+        await prisma.clientProfile.delete({ where: { id: client1.data.id } })
+      }
+      if (client2.success) {
+        await prisma.clientProfile.delete({ where: { id: client2.data.id } })
+      }
+    })
+  })
+
+  describe('sanitizeClient', () => {
+    test('should return only public client data', async () => {
+      // Create client
+      const createResult = await clientService.createClient(
+        {
+          phoneNumber: '+6666666666',
+          firstName: 'Sanitize',
+          lastName: 'Test'
+        },
+        verifiedUser.id
+      )
+      expect(createResult.success).toBe(true)
+
+      if (createResult.success) {
+        const publicClient = clientService.sanitizeClient(createResult.data)
+
+        expect(publicClient).toHaveProperty('id')
+        expect(publicClient).toHaveProperty('phoneNumber')
+        expect(publicClient).toHaveProperty('status')
+        expect(publicClient).toHaveProperty('riskLevel')
+        expect(publicClient).not.toHaveProperty('createdBy')
+        expect(publicClient).not.toHaveProperty('updatedAt')
+
+        // Clean up
+        await prisma.clientProfile.delete({ where: { id: createResult.data.id } })
+      }
+    })
+  })
+})
